@@ -40,9 +40,10 @@ If ambiguous, ask: "你是想复盘自己的项目，还是想参考别人的项
 
 ### Goal
 
-Analyze a completed vibe coding project and generate TWO outputs:
+Analyze a completed vibe coding project and generate THREE outputs:
 1. **`{project-name}-story.html`** — A self-contained HTML article for humans to read
 2. **`{project-name}-knowledge.md`** — A structured knowledge document for agents to reference
+3. **`outputs/cards/card-*.png`** — Social media image cards (1080x1350 @2x, 4:5 ratio) for sharing on Xiaohongshu/Instagram
 
 ### Step 1: Locate All Data Sources
 
@@ -116,9 +117,9 @@ Show the user what you found. Ask them to supplement what can't be extracted aut
 
 User can skip any question. Fill gaps from session logs and git history.
 
-### Step 3: Generate Two Outputs
+### Step 3: Generate Three Outputs
 
-Place both in `./outputs/` directory.
+Place all in `./outputs/` directory.
 
 #### Output 1: `{project-name}-story.html`
 
@@ -139,6 +140,7 @@ Design guidelines:
 - Warm color palette (cream/off-white backgrounds)
 - Responsive (works on mobile and desktop)
 - Include direct quotes from session logs throughout
+- Must include in `<head>`: SVG emoji favicon (`<link rel="icon" href="data:image/svg+xml,...">`) and Open Graph meta tags (`og:title`, `og:description`, `og:type`, `og:url`) so browser tabs show an icon and social sharing shows preview
 
 #### Output 2: `{project-name}-knowledge.md`
 
@@ -251,6 +253,179 @@ Every knowledge output MUST follow this structure. This is the standard — it e
 ### On Technical Choices
 {Bullet points}
 ```
+
+#### Output 3: Social Media Cards (`outputs/cards/card-*.png`)
+
+After generating story.html, automatically generate a set of social media image cards for sharing.
+
+**Approach**: Do NOT screenshot/split the long story.html. Instead, create a NEW `outputs/story-cards.html` with content re-laid-out as independent card divs, then use Puppeteer to screenshot each card element.
+
+**Card splitting logic** — map story.html sections to 5-8 cards:
+
+| Card | Content | Design |
+|---|---|---|
+| 1 (Cover) | Title + subtitle + key stats | Centered, large serif text, stats row at bottom |
+| 2 (Origin) | The problem / origin story | Narrative + blockquote + insight highlight box |
+| 3 (Decisions) | Core creative decisions | Pass/Chosen comparison grid (2-3 rows) |
+| 4 (Timeline) | Development timeline | Vertical timeline with dots, dates, milestones |
+| 5 (Method) | Collaboration methodology | Quote + numbered rule cards with left border |
+| 6 (Lessons) | Lessons / advice | Numbered items (01-05) with title + description |
+| 7 (Closing) | Epilogue | Centered quote, divider, emotional closure |
+
+**Splitting principles**:
+- Each card = one topic, readable in 3 seconds
+- Cover and closing cards have more whitespace; middle cards can be denser
+- Scatter developer quotes (blockquotes) across different cards for authenticity
+- 5-8 cards total — adapt count to project content volume
+
+**Card HTML structure**:
+```html
+<body>
+  <div class="card" id="card-1">
+    <div class="card-inner"><!-- content --></div>
+    <div class="card-footer">
+      <span>PROJECT NAME</span>
+      <span>1 / N</span>
+    </div>
+  </div>
+  <div class="card" id="card-2">...</div>
+</body>
+```
+
+**Card CSS requirements**:
+```css
+.card {
+  width: 1080px;
+  height: 1350px;           /* fixed 4:5 ratio for Xiaohongshu/Instagram */
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--sans);
+}
+.card-inner {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;  /* vertically center content — prevents top-heavy layout */
+  padding: 60px 80px 40px;
+}
+.card-footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 80px 48px;
+  font-family: var(--mono);
+  font-size: 22px;
+  color: var(--text-3);
+}
+```
+
+**Visual style**: Inherit the color palette from story.html. Extract CSS variables from the story page (background, accent colors, text colors, fonts) and reuse them in the cards. Keep cards visually consistent with the story page. Use warm, readable color schemes — avoid harsh dark backgrounds.
+
+**Font sizes**: Cards are 1080px wide, so body text should be 22-28px, titles 44-50px, heading numbers 48-58px. Content should fill roughly 70-85% of the card height — if there's too much whitespace top/bottom, increase font sizes, line-heights, and gaps.
+
+**Puppeteer capture script** (`outputs/capture-cards.mjs`):
+```javascript
+import puppeteer from 'puppeteer-core';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const htmlPath = `file://${path.join(__dirname, 'story-cards.html')}`;
+const outDir = path.join(__dirname, 'cards');
+fs.mkdirSync(outDir, { recursive: true });
+
+// Find Chrome executable
+const chromePaths = [
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/chromium',
+];
+// Also check puppeteer cache
+const cacheDir = path.join(process.env.HOME, '.cache/puppeteer/chrome');
+if (fs.existsSync(cacheDir)) {
+  for (const ver of fs.readdirSync(cacheDir)) {
+    chromePaths.unshift(path.join(cacheDir, ver, 'chrome-linux64/chrome'));
+  }
+}
+const executablePath = chromePaths.find(p => fs.existsSync(p));
+if (!executablePath) { console.error('Chrome not found'); process.exit(1); }
+
+const browser = await puppeteer.launch({
+  headless: true,
+  executablePath,
+  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu']
+});
+const page = await browser.newPage();
+await page.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 2 });
+await page.goto(htmlPath, { waitUntil: 'networkidle0', timeout: 30000 });
+await page.evaluate(() => document.fonts.ready);
+await new Promise(r => setTimeout(r, 1500));
+
+const totalCards = await page.$$eval('.card', cards => cards.length);
+console.log(`Found ${totalCards} cards, capturing...`);
+for (let i = 1; i <= totalCards; i++) {
+  const el = await page.$(`#card-${i}`);
+  if (!el) continue;
+  const outPath = path.join(outDir, `card-${i}.png`);
+  await el.screenshot({ path: outPath, type: 'png' });
+  const stat = fs.statSync(outPath);
+  console.log(`card-${i}.png — ${Math.round(stat.size / 1024)}KB`);
+}
+await browser.close();
+console.log('Done!');
+```
+
+**Key technical notes**:
+- Use `puppeteer-core` (not `puppeteer`) with explicit `executablePath` — more reliable in diverse environments
+- `deviceScaleFactor: 2` → output 2160x2700 actual pixels, sharp on retina displays
+- `element.screenshot()` not `page.screenshot()` → precise cropping per card
+- `justify-content: center` on `.card-inner` → content vertically centered, no top-heavy whitespace
+- `waitUntil: 'networkidle0'` + `document.fonts.ready` + 1.5s delay → ensure fonts render
+
+**Execution steps**:
+1. Install puppeteer-core if needed: `npm install puppeteer-core` (in project or outputs dir)
+2. Generate `outputs/story-cards.html` (re-laid-out card version inheriting story.html palette)
+3. Generate `outputs/capture-cards.mjs` (screenshot script with Chrome auto-detection)
+4. Run: `node outputs/capture-cards.mjs`
+5. Verify output images exist and visually check a few cards for readability and whitespace balance
+
+**Fallback**: If Puppeteer/Chrome is not available, generate only `story-cards.html` and tell the user to open it in a browser and manually screenshot each card.
+
+### Step 4: Publish to AgentsLink (Optional)
+
+After generating all three outputs, offer to publish to AgentsLink for easy sharing via URL.
+
+**How it works**: One URL serves different content based on who opens it:
+- **Browser** → story HTML (the beautiful article)
+- **Agent/curl** → knowledge markdown (the structured doc)
+
+**Publish script**:
+```bash
+# Read story HTML and knowledge markdown, publish to AgentsLink
+STORY=$(cat outputs/{project-name}-story.html | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+KNOWLEDGE=$(cat outputs/{project-name}-knowledge.md | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+
+curl -s -X POST "https://agentslink.link/publish" \
+  -H "Content-Type: application/json" \
+  -d "{\"story\":${STORY},\"knowledge\":${KNOWLEDGE},\"title\":\"{Project Title}\",\"author\":\"{Author}\"}"
+```
+
+**Response**:
+```json
+{
+  "id": "abc123",
+  "url": "https://agentslink.link/p/abc123"
+}
+```
+
+Tell the user:
+- "已发布到 {url}"
+- "浏览器打开是 HTML 文章，Agent 访问是知识文档"
+- "这个链接永久有效，可以直接分享给别人"
+
+If the user declines publishing, skip this step — local files are always the primary output.
 
 ---
 
@@ -366,10 +541,12 @@ Tell the user what was set up and how to proceed:
 - All project-specific content goes into the GENERATED output files
 - The knowledge document schema is the standard — every generated file follows it
 
-### Two Distinct Outputs (Retrospect Mode)
-- **HTML**: For humans to read. Editorial, storytelling style. Self-contained.
-- **Knowledge doc**: For agents to reference. Structured, predictable format. Parseable.
+### Three Distinct Outputs (Retrospect Mode)
+- **HTML** (`story.html`): For humans to read. Editorial, storytelling style. Self-contained.
+- **Knowledge doc** (`knowledge.md`): For agents to reference. Structured, predictable format. Parseable.
+- **Social cards** (`cards/card-*.png`): For social media sharing. Re-laid-out from story.html as independent visual cards, captured via Puppeteer.
 - Never combine these into one file. They serve different audiences.
+- Cards are NOT screenshots of the story page — they are a separate layout optimized for 4:5 ratio social media images.
 
 ### Knowledge Doc is NOT a Skill
 - The knowledge document is reference material, not behavior definition
